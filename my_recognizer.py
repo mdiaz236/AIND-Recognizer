@@ -1,6 +1,6 @@
 import warnings
 from asl_data import SinglesData
-
+import numpy as np
 
 def recognize(models: dict, test_set: SinglesData):
     """ Recognize test word sequences from word models set
@@ -22,4 +22,20 @@ def recognize(models: dict, test_set: SinglesData):
     guesses = []
     # TODO implement the recognizer
     # return probabilities, guesses
-    raise NotImplementedError
+    for i, Xlengths in test_set.get_all_Xlengths().items():
+        X, lengths = Xlengths
+        prob_dict = {}
+        best_guess = None
+        best_prob = -np.inf
+        for word, model in models.items():
+            try:
+                logL = model.score(X, lengths)
+                if logL > best_prob:
+                    best_prob = logL
+                    best_guess = word
+                prob_dict[word] = logL
+            except (AttributeError, ValueError):
+                pass
+        probabilities.append(prob_dict)
+        guesses.append(best_guess)
+    return (probabilities, guesses)

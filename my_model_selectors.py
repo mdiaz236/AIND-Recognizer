@@ -68,6 +68,18 @@ class SelectorBIC(ModelSelector):
     Bayesian information criteria: BIC = -2 * logL + p * logN
     """
 
+    def run_bic_model(self, num_states):
+        try:
+            model = self.base_model(num_states)
+            logL = model.score(self.X, self.lengths)
+            N = len(self.X)
+            p = num_states ** 2 + 2 * model.n_features * num_states - 1
+
+            bic = p * np.log(N) - 2 * logL
+            return (model, bic)
+        except (AttributeError, ValueError) as e:
+            return None
+
     def select(self):
         """ select the best model for self.this_word based on
         BIC score for n between self.min_n_components and self.max_n_components
@@ -76,8 +88,15 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        bic_models = map(lambda x: self.run_bic_model(x),
+                         range(self.min_n_components, self.max_n_components + 1))
+        valid_models = [x for x in bic_models if x is not None]
+
+        if len(valid_models) > 0:
+            best_model = sorted(valid_models, key=lambda x: x[1])[0]
+            return best_model[0]
+        else:
+            return None
 
 
 class SelectorDIC(ModelSelector):
@@ -90,20 +109,78 @@ class SelectorDIC(ModelSelector):
     DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
     '''
 
+    def score_word(self, num_states):
+        model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
+                            random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+        logL = model.score(self.X, self.lengths)
+        return (model, logL)
+
+    def score_other_word(self, model, word):
+        X, lengths = self.hwords[word]
+        logL = model.score(X, lengths)
+        return logL
+
+
+    def run_dic_model(self, num_states):
+        try:
+            alpha = 1.
+            (model, word_logL) = self.score_word(num_states)
+            other_words = filter(lambda word: word != self.this_word,
+                                 self.words.keys())
+            other_logL = list(map(lambda x: self.score_other_word(model, x),
+                             other_words))
+            other_logL_mean = np.nanmean(other_logL)
+            dic = word_logL - (alpha * other_logL_mean)
+            return (model, dic, num_states)
+        except (ValueError, AttributeError) as e:
+            return None
+
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        dic_models = map(lambda x: self.run_dic_model(x),
+                         range(self.min_n_components, self.max_n_components + 1))
+        valid_models = [x for x in dic_models if x is not None]
 
+        if len(valid_models) > 0:
+            best_model = sorted(valid_models, key=lambda x: -x[1])[0]
+            return best_model[0]
+        else:
+            return None
 
 class SelectorCV(ModelSelector):
     ''' select best model based on average log Likelihood of cross-validation folds
 
     '''
+    def run_model(self, train, train_lengths, test, test_lengths, num_states):
+        '''
+        return log likelyhood
+        '''
+        model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
+                          random_state=self.random_state, verbose=False).fit(train, train_lengths)
+        logL = model.score(test, test_lengths)
+        return logL
+
+
+    def run_cv_model(self, sequences, num_states):
+        try:
+            split_method = KFold()
+            seq = np.array(sequences)
+            all_logL = []
+            for train_i, test_i in split_method.split(seq):
+                train, train_lengths = combine_sequences(train_i, seq)
+                test, test_lengths = combine_sequences(test_i, seq)
+                logL = self.run_model(train, train_lengths, test, test_lengths, num_states)
+                all_logL.append(logL)
+            return (num_states, np.mean(all_logL))
+        except (AttributeError, ValueError):
+            return (num_states, np.nan)
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        results = list(map(lambda x: self.run_cv_model(self.sequences, x),
+                           range(self.min_n_components, self.max_n_components + 1)))
+        best_states = sorted(results, key=lambda x: -x[1])[0][0]
+        best_model = self.base_model(best_states)
+        return best_model
